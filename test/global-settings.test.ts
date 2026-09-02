@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { readGlobalSettings, readRenderMode, readSupervisorLimitOverrides, updateGlobalSettings } from '../src/global-settings.ts'
+import { dirname, join } from 'node:path'
+import { readGlobalSettings, readRenderMode, readSupervisorLimitOverrides, readTrustedOrigins, updateGlobalSettings, parseTrustedOrigins } from '../src/global-settings.ts'
 import { isGlobalSettingsView } from '../src/client/ClaudeCodeSettings.tsx'
 
 const roots: string[] = []
@@ -23,6 +23,48 @@ async function fixture() {
 }
 
 describe('Claude Code global settings registry', () => {
+  it('parses and stores the trusted-origins allowlist, defaulting to empty', async () => {
+    const paths = await fixture()
+    const initial = await readGlobalSettings({ paths })
+    expect(initial.settings.find(setting => setting.key === 'trustedOrigins')).toMatchObject({
+      kind: 'text', value: '', effect: 'immediate',
+    })
+
+    const updated = await updateGlobalSettings({ trustedOrigins: 'DSH.Example.com, dsh2.example.cn:8443' }, { paths })
+    expect(updated.settings.find(setting => setting.key === 'trustedOrigins')).toMatchObject({ value: 'dsh.example.com, dsh2.example.cn:8443' })
+    expect(JSON.parse(await readFile(paths.pluginSettingsFile, 'utf8'))).toEqual({ trustedOrigins: 'dsh.example.com,dsh2.example.cn:8443' })
+
+    // Empty input removes the key entirely, restoring loopback-only access.
+    const cleared = await updateGlobalSettings({ trustedOrigins: '' }, { paths })
+    expect(cleared.settings.find(setting => setting.key === 'trustedOrigins')).toMatchObject({ value: '' })
+    expect(JSON.parse(await readFile(paths.pluginSettingsFile, 'utf8'))).toEqual({})
+    await expect(updateGlobalSettings({ trustedOrigins: 'https://dsh.example.com' }, { paths })).rejects.toThrow('Invalid value')
+    await expect(updateGlobalSettings({ trustedOrigins: 'ok.example.com not_ok' }, { paths })).rejects.toThrow('Invalid value')
+  })
+
+  it('reads the trusted-origins allowlist per request with mtime memoization', async () => {
+    const paths = await fixture()
+    expect(await readTrustedOrigins({ paths })).toEqual([])
+    await mkdir(dirname(paths.pluginSettingsFile), { recursive: true })
+    await writeFile(paths.pluginSettingsFile, JSON.stringify({ trustedOrigins: 'dsh.example.com' }), 'utf8')
+    expect(await readTrustedOrigins({ paths })).toEqual(['dsh.example.com'])
+    // A changed mtime must re-parse even when the file existed before.
+    await new Promise(resolve => setTimeout(resolve, 15))
+    await writeFile(paths.pluginSettingsFile, JSON.stringify({ trustedOrigins: 'c.example.com' }), 'utf8')
+    expect(await readTrustedOrigins({ paths })).toEqual(['c.example.com'])
+    await rm(paths.pluginSettingsFile)
+    expect(await readTrustedOrigins({ paths })).toEqual([])
+  })
+
+  it('normalizes trusted-origin entries and rejects non-authority input', () => {
+    expect(parseTrustedOrigins(' DSH.Example.com ,;a.b:8443\nc.d')).toEqual(['dsh.example.com', 'a.b:8443', 'c.d'])
+    expect(parseTrustedOrigins(['x.example.com', 'x.example.com'])).toEqual(['x.example.com'])
+    expect(parseTrustedOrigins('')).toEqual([])
+    expect(() => parseTrustedOrigins('https://dsh.example.com')).toThrow('Invalid value')
+    expect(() => parseTrustedOrigins('dsh.example.com/path')).toThrow('Invalid value')
+    expect(() => parseTrustedOrigins(42 as unknown)).toThrow('Invalid value')
+  })
+
   it('returns built-in and bounded custom output-style names without prompt bodies', async () => {
     const paths = await fixture()
     await mkdir(paths.outputStylesDir, { recursive: true })

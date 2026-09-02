@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
-import { chmod, mkdir, opendir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, opendir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, extname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
@@ -31,6 +31,10 @@ const MAX_BRANCH_PREFIX_CHARS = 128
 const MAX_PROCESSES_LIMIT = 16
 const MAX_IDLE_TIMEOUT_MINUTES = 24 * 60
 const DEFAULT_LIMITS: SupervisorLimits = { maxProcesses: 4, idleTimeoutMs: 30 * 60_000 }
+
+/** Bounds for the trusted-origins allowlist: at most 32 authorities, 512 chars of input. */
+const MAX_TRUSTED_ORIGINS = 32
+const MAX_TRUSTED_ORIGINS_CHARS = 512
 
 type JsonObject = Record<string, unknown>
 export type GlobalSettingEffect = 'immediate' | 'new-session' | 'next-turn' | 'next-worktree' | 'restart'
@@ -226,6 +230,74 @@ const WORKTREE_BRANCH_PREFIX: TextSettingDescriptor = {
   },
 }
 
+/** Canonical form of one allowlist entry: a bare lowercase `host` or `host:port`
+ *  authority. Scheme prefixes and paths are rejected as typos rather than
+ *  silently stripped, mirroring the Host's own `trustedHosts` strictness. The
+ *  hostname charset stays stricter than WHATWG parsing (letters, digits, dots,
+ *  hyphens) so underscore lookalikes fail loudly here instead of failing at
+ *  the proxy. */
+export function canonicalTrustedAuthority(token: string): string | undefined {
+  const value = token.trim().toLowerCase()
+  if (value === '' || value.includes('/') || value.includes('?') || value.includes('#') || value.includes('@')) return undefined
+  const withoutPort = value.replace(/:[0-9]+$/u, '')
+  if (!/^[a-z0-9.-]+$/u.test(withoutPort) || withoutPort.startsWith('-') || withoutPort.startsWith('.') || withoutPort.endsWith('-') || withoutPort.endsWith('.')) return undefined
+  let url: URL
+  try {
+    url = new URL(`http://${value}`)
+  } catch {
+    return undefined
+  }
+  if (url.hostname === '') return undefined
+  return url.port !== '' ? `${url.hostname}:${url.port}` : url.hostname
+}
+
+/** Parse the settings field: one string with comma/space/semicolon/newline
+ *  separators, or a JSON array of strings. Deduplicates; order is preserved. */
+export function parseTrustedOrigins(value: unknown): string[] {
+  const raw = typeof value === 'string'
+    ? value
+    : Array.isArray(value) && value.every(entry => typeof entry === 'string')
+      ? value.join(',')
+      : null
+  if (raw === null) throw new Error('Invalid value for global setting trustedOrigins')
+  if (raw.length > MAX_TRUSTED_ORIGINS_CHARS) throw new Error('Invalid value for global setting trustedOrigins')
+  const seen = new Set<string>()
+  for (const token of raw.split(/[\s,;]+/u)) {
+    if (token === '') continue
+    const authority = canonicalTrustedAuthority(token)
+    if (authority === undefined) throw new Error(`Invalid value for global setting trustedOrigins: ${JSON.stringify(token)}`)
+    seen.add(authority)
+    if (seen.size > MAX_TRUSTED_ORIGINS) throw new Error('Invalid value for global setting trustedOrigins: too many entries')
+  }
+  return [...seen]
+}
+
+/** Domains allowed to reach the plugin routes from outside loopback, stored as
+ *  one comma-joined string in the plugin settings document. Empty removes the
+ *  key, restoring loopback-only access. */
+const TRUSTED_ORIGINS: TextSettingDescriptor = {
+  key: 'trustedOrigins',
+  kind: 'text',
+  document: 'plugin',
+  effect: 'immediate',
+  maxLength: MAX_TRUSTED_ORIGINS_CHARS,
+  read(document) {
+    const value = document.trustedOrigins
+    if (typeof value !== 'string') return ''
+    try {
+      return parseTrustedOrigins(value).join(', ')
+    } catch {
+      return ''
+    }
+  },
+  apply(document, value) {
+    if (typeof value !== 'string') throw new Error('Invalid value for global setting trustedOrigins')
+    const hosts = parseTrustedOrigins(value)
+    if (hosts.length === 0) delete document.trustedOrigins
+    else document.trustedOrigins = hosts.join(',')
+  },
+}
+
 /** Which renderer draws Claude's visible output. Plugin settings, not Claude's:
  *  the CLI has no opinion about how DSH paints a turn. The option labels stay
  *  machine-readable ids; the Client translates the two known values. */
@@ -327,7 +399,7 @@ function integerSetting(
 const MAX_PROCESSES = integerSetting('maxProcesses', 1, MAX_PROCESSES_LIMIT, limits => limits.maxProcesses)
 const IDLE_TIMEOUT_MINUTES = integerSetting('idleTimeoutMinutes', 1, MAX_IDLE_TIMEOUT_MINUTES, limits => Math.max(1, Math.round(limits.idleTimeoutMs / 60_000)))
 
-const DESCRIPTORS: readonly SettingDescriptor[] = [OUTPUT_STYLE, RENDERER, PROSE, ALERTS, WORKTREE_BRANCH_PREFIX, MAX_PROCESSES, IDLE_TIMEOUT_MINUTES]
+const DESCRIPTORS: readonly SettingDescriptor[] = [OUTPUT_STYLE, RENDERER, PROSE, ALERTS, WORKTREE_BRANCH_PREFIX, TRUSTED_ORIGINS, MAX_PROCESSES, IDLE_TIMEOUT_MINUTES]
 const DESCRIPTOR_BY_KEY = new Map(DESCRIPTORS.map(descriptor => [descriptor.key, descriptor]))
 let pendingWrite: Promise<unknown> = Promise.resolve()
 
@@ -405,6 +477,28 @@ export async function readRenderMode(deps: GlobalSettingsDependencies = {}): Pro
 export async function readWorktreeBranchPrefix(deps: GlobalSettingsDependencies = {}): Promise<string> {
   const paths = pathsFor(deps)
   return WORKTREE_BRANCH_PREFIX.read(await readDocument(paths.pluginSettingsFile))
+}
+
+/** Memoized per-request reader for the trusted-origins allowlist: the settings
+ *  file is re-stat'ed on every call and re-parsed only when its mtime moved, so
+ *  a settings save (or a manual file edit) lands on the next request without a
+ *  restart, while the common no-change path costs one stat. Unreadable or
+ *  malformed files serve the empty allowlist — loopback-only access. */
+let trustedOriginsCache: { path: string; mtimeMs: number; hosts: string[] } | undefined
+
+export async function readTrustedOrigins(deps: GlobalSettingsDependencies = {}): Promise<readonly string[]> {
+  const path = pathsFor(deps).pluginSettingsFile
+  try {
+    const info = await stat(path)
+    if (trustedOriginsCache !== undefined && trustedOriginsCache.path === path && trustedOriginsCache.mtimeMs === info.mtimeMs) {
+      return trustedOriginsCache.hosts
+    }
+    const hosts = parseTrustedOrigins((await readDocument(path)).trustedOrigins)
+    trustedOriginsCache = { path, mtimeMs: info.mtimeMs, hosts }
+    return hosts
+  } catch {
+    return []
+  }
 }
 
 async function atomicWrite(path: string, document: JsonObject): Promise<void> {

@@ -58,12 +58,14 @@ See [INSTALL.md](./INSTALL.md) for the full runbook, and [AGENTS.md](./AGENTS.md
 
 - `DSH_CLAUDE_BRIDGE_DEBUG=1` (Host process environment) enables a verbose per-request bridge log at `~/.dsh/dsh-claude-bridge.log`.
 - Bridge token file: `~/.dsh/anthropic-bridge-token`. Delete it to rotate the token on next start (running sessions will need to be restarted).
+- **Remote access domains** (Settings → Claude Code → Allowed access domains): by default the plugin's own HTTP routes (doctor, settings, repository panels, the live projection stream) answer only to `127.0.0.1` / `localhost`. Hosts listed in the Host's `dsh web --trusted-host` flag are accepted automatically. Extra domains can be added as a comma-separated list in the plugin settings (or edited directly in `~/.dsh/plugins/dsh-claude/settings.json`, key `trustedOrigins`; applies on the next request without a restart). Every non-loopback request must additionally carry a valid dsh web login session — the plugin re-verifies the request's session cookie with the Host over loopback before serving it, so anonymous internet traffic to a public domain stays rejected.
 
 ### Troubleshooting
 
 - **401 `authentication_error` from the bridge** — a CLI process is running with an older bridge token. Restart the conversation (or the Host); the token is stable across restarts, so this should only happen after manually rotating it.
 - **`The supported API model names are … but you passed <composite>`** — the request did not go through the bridge: your `~/.claude/settings.json` still points at a third-party endpoint and the session was not spawned with the bridge settings. Update this fork to ≥ 0.2.0 (the spawner injects `--settings`), or clear `ANTHROPIC_BASE_URL` from your `~/.claude/settings.json`.
 - **The Claude group shows Claude's own models (default/opus/sonnet/haiku)** — the DSH catalog walk returned nothing; check that other providers are registered and healthy (`GET /plugins/dsh-claude/doctor` from a logged-in page).
+- **Settings panels or the live Claude transcript fail with `forbidden`** — you are reaching dsh through a domain that is neither loopback nor allowlisted (for example a reverse-proxy domain). Add the domain via `dsh web --trusted-host <domain>` (accepted automatically) or in Settings → Claude Code → Allowed access domains, and make sure you are logged into dsh web in that browser (the plugin verifies the dsh session before serving non-loopback requests).
 
 ---
 

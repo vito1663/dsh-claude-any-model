@@ -24,6 +24,74 @@ export function trustedRequest(req: IncomingMessage): boolean {
   }
 }
 
+/**
+ * Non-loopback authorities this deployment additionally serves: the Host's own
+ * `--trusted-host` roster plus the domains configured in the plugin settings.
+ * Absent injection keeps the loopback-only behaviour.
+ */
+export interface TrustedOriginAccess {
+  /** Current allowlist, re-read per request so settings changes land without a restart. */
+  hosts(): Promise<readonly string[]>
+  /** Whether the request carries a browser session the Host itself accepts. */
+  verifySession(req: IncomingMessage): Promise<boolean>
+}
+
+let trustedOriginAccess: TrustedOriginAccess | undefined
+
+/** Composition-root injection; the plugin registers one access object at apply time. */
+export function setTrustedOriginAccess(access: TrustedOriginAccess | undefined): void {
+  trustedOriginAccess = access
+}
+
+/** Parse a `host` / `host:port` authority the way the Host's own fence does. */
+function parseAuthority(authority: string): URL | undefined {
+  try {
+    return new URL(`http://${authority}`)
+  } catch {
+    return undefined
+  }
+}
+
+/** Whether one configured entry matches the request authority: explicit port matches exactly, port-less matches the hostname on any port. */
+function matchesAuthority(entry: string, hostUrl: URL): boolean {
+  const entryUrl = parseAuthority(entry)
+  if (entryUrl === undefined) return false
+  return entryUrl.port !== ''
+    ? entryUrl.host === hostUrl.host
+    : entryUrl.hostname === hostUrl.hostname
+}
+
+/**
+ * Extended trust decision: loopback requests keep the strict original fence;
+ * a request for a configured remote authority must additionally carry a
+ * browser session the Host itself accepts (cookie replay over loopback), and
+ * any attached Origin must be the very authority it claims.
+ *
+ * Async because the allowlist is re-read from settings per request and the
+ * session check is an outbound probe; the wrapper awaits this before any
+ * route work starts.
+ */
+export async function trustedRequestExtended(req: IncomingMessage, extraHosts: readonly string[]): Promise<boolean> {
+  const site = req.headers['sec-fetch-site']
+  if (site === 'cross-site') return false
+  const host = req.headers.host
+  if (host === undefined) return false
+  const hostUrl = parseAuthority(host)
+  if (hostUrl === undefined) return false
+  if (trustedRequest(req)) return true
+  if (extraHosts.length === 0 || trustedOriginAccess === undefined) return false
+  if (!extraHosts.some(entry => matchesAuthority(entry, hostUrl))) return false
+  const origin = req.headers.origin
+  if (origin !== undefined) {
+    try {
+      if (new URL(origin).host !== hostUrl.host) return false
+    } catch {
+      return false
+    }
+  }
+  return await trustedOriginAccess.verifySession(req)
+}
+
 /** Send a non-cacheable JSON response with MIME sniffing disabled. */
 export function json(res: ServerResponse, status: number, value: unknown): void {
   res.writeHead(status, {
@@ -165,8 +233,8 @@ export function registerPluginRoute(ctx: Context, route: PluginRoute): void {
       if (!isPluginMethod(method) || !route.methods.includes(method)) {
         return json(res, 405, { error: 'method not allowed' })
       }
-      if (!trustedRequest(req)) return json(res, 403, { error: 'forbidden' })
-      // Before any await: a disconnect during setup must still cancel.
+      // Before any await: a disconnect during setup must still cancel. These
+      // listeners go on before the trust decision below, which may await.
       const aborted = new AbortController()
       const abort = (): void => { aborted.abort() }
       // `req` emits 'close' when the request is COMPLETE, not only when the
@@ -175,6 +243,17 @@ export function registerPluginRoute(ctx: Context, route: PluginRoute): void {
       // `complete` is what tells the two apart.
       req.on('close', () => { if (!req.complete) abort() })
       res.on('close', abort)
+      // The loopback fence is a pure header/socket read, so it decides
+      // synchronously and stream headers still go out before the first await.
+      // Only a request the loopback fence refused takes the async remote path.
+      const remoteAccess = trustedOriginAccess
+      let allowed = trustedRequest(req)
+      if (!allowed && remoteAccess !== undefined) {
+        allowed = await trustedRequestExtended(req, await remoteAccess.hosts())
+      }
+      if (!allowed) {
+        return json(res, 403, { error: 'forbidden' })
+      }
       const url = new URL(req.url ?? '/', 'http://localhost')
       if (route.mode === 'stream') {
         const release = streams.admit(route.path, route.streamKey(url), route.maxConcurrent, abort)

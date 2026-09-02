@@ -44,7 +44,9 @@ import { ReviewCommentStore } from './review-comments.ts'
 import { registerClaudeUpdateRoutes } from './update-routes.ts'
 import { normalizePlanUsage, probePlanUsage, recordPlanUsage } from './plan-usage.ts'
 import { registerPlanUsageRoute } from './plan-usage-routes.ts'
-import { readRenderMode, readSupervisorLimitOverrides, readWorktreeBranchPrefix, registerClaudeGlobalSettingsRoute } from './global-settings.ts'
+import { readRenderMode, readSupervisorLimitOverrides, readTrustedOrigins, readWorktreeBranchPrefix, registerClaudeGlobalSettingsRoute } from './global-settings.ts'
+import { setTrustedOriginAccess } from './http.ts'
+import { createSessionVerifier } from './session-verify.ts'
 
 export const name = 'llm-claude'
 export const inject = ['llm', 'agents', 'agentPresets', 'commands', 'subprocess', 'approval', 'userQuestions', 'attachments']
@@ -438,6 +440,24 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   ctx.effect(() => () => supervisor.dispose(), 'dsh-claude: process supervisor')
   ctx.effect(() => () => repositoryStatus.dispose(), 'dsh-claude: repository status cache')
   ctx.inject(['webServer'], webCtx => {
+    // Remote-access trust: follow the Host's own `--trusted-host` roster when
+    // this composition provides `webStartup`, unioned with the domains the
+    // user configures in Settings; every non-loopback request must also carry
+    // a browser session the Host itself accepts (cookie replay over loopback).
+    const webStartup = webCtx.get('webStartup') as { trustedHosts?: readonly string[] } | undefined
+    const hostTrustedHosts = Array.isArray(webStartup?.trustedHosts)
+      ? webStartup.trustedHosts.filter((entry): entry is string => typeof entry === 'string')
+      : []
+    webCtx.effect(() => {
+      setTrustedOriginAccess({
+        hosts: async () => {
+          const fromSettings = await readTrustedOrigins().catch(() => [])
+          return [...new Set([...hostTrustedHosts, ...fromSettings])]
+        },
+        verifySession: createSessionVerifier(),
+      })
+      return () => { setTrustedOriginAccess(undefined) }
+    }, 'dsh-claude: trusted-origin access')
     registerClaudeClientDiagnosticsRoute(webCtx)
     registerClaudeDoctorRoutes(webCtx, webCtx.subprocess, supervisor, supervisorConfig, resolutionError, bridgeStatus)
     const desktopActions = webCtx.get('desktopActions') as { requestRestart?: () => void } | undefined

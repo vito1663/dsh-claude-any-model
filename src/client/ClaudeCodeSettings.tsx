@@ -296,6 +296,7 @@ export const SETTING_COPY: Readonly<Record<string, { label: ClaudeCodeSettingsKe
   prose: { label: 'prose', hint: 'proseEffect' },
   alerts: { label: 'alerts', hint: 'alertsEffect' },
   worktreeBranchPrefix: { label: 'worktreeBranchPrefix', hint: 'worktreeBranchPrefixEffect' },
+  trustedOrigins: { label: 'trustedOrigins', hint: 'trustedOriginsEffect' },
   maxProcesses: { label: 'maxProcessesSetting', hint: 'maxProcessesEffect' },
   idleTimeoutMinutes: { label: 'idleTimeoutSetting', hint: 'idleTimeoutEffect' },
 }
