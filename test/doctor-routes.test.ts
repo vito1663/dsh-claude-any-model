@@ -67,7 +67,7 @@ describe('Claude Doctor Web route', () => {
       defaultModel: 'default',
       idleTimeoutMs: 1_000,
       maxProcesses: 4,
-    }, new Error('Claude Code executable not found'))
+    }, new Error('Claude Code executable not found'), { url: 'http://127.0.0.1:45677' })
     const res = response()
     await ctx.captured.handler(request({ host: 'localhost:56454' }), res)
     expect(res.statusCode).toBe(200)
@@ -76,6 +76,7 @@ describe('Claude Doctor Web route', () => {
       version: { status: 'not-run' },
       authentication: { status: 'not-run' },
       processes: { count: 0, active: 0 },
+      modelBridge: { url: 'http://127.0.0.1:45677' },
     })
   })
 

@@ -63,6 +63,7 @@ export function registerClaudeDoctorRoutes(
   supervisor: ClaudeSupervisor,
   config: ClaudeSupervisorConfig,
   resolutionError?: unknown,
+  bridgeStatus?: { url: string } | { error: string },
 ): void {
   registerPluginRoute(ctx, {
     mode: 'unary',
@@ -87,6 +88,7 @@ export function registerClaudeDoctorRoutes(
               maxProcesses: config.maxProcesses,
             },
             processes: { count: 0, active: 0 },
+            modelBridge: bridgeStatus ?? { error: 'not started' },
           } }
         }
         const report = await runClaudeDoctor(runtime, {
@@ -109,6 +111,7 @@ export function registerClaudeDoctorRoutes(
             active: processes.filter(process => process.state === 'running' || process.state === 'starting').length,
           },
           commandBridge: commandDiagnostics(ctx),
+          modelBridge: bridgeStatus ?? { error: 'not started' },
         } }
       } catch (error) {
         return { status: 500, value: { error: safeMessage(error) } }

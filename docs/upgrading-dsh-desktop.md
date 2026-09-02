@@ -30,13 +30,14 @@ First confirm the plugin is the cause:
 tail -50 "$APPDATA/DSH Desktop/logs/dsh-$(date +%F).error.log"
 ```
 
-`RendererStartupFailure` naming `@norman-else/dsh-claude` means this package.
+`RendererStartupFailure` naming `dsh-claude-any-model` (or, in logs from before
+this fork, `@norman-else/dsh-claude`) means this package.
 Without it, the fault is elsewhere and disabling the plugin will not help.
 
-**Roll the checkout back.** The profile links the plugin as
-`link:K:/PersonalWorkspace/dsh-claude`, so the running plugin *is* the working
-tree — reverting the code reverts the plugin, with no DSH configuration
-touched:
+**Roll the checkout back.** A source checkout is mounted through the profile
+as a `link:` dependency (`dsh plugin --profile <name> add "link:$(pwd)"`), so
+the running plugin *is* the working tree — reverting the code reverts the
+plugin, with no DSH configuration touched:
 
 ```bash
 git checkout <last-known-good> && pnpm build
@@ -47,11 +48,11 @@ Restart Desktop. This is the fastest route and the one to try first.
 **If that is not enough, unmount the plugin entirely.** Both edits are plain
 config and fully reversible:
 
-1. In `~/.dsh/profiles/desktop/package.json`, drop `"@norman-else/dsh-claude"`
+1. In `~/.dsh/profiles/desktop/package.json`, drop `"dsh-claude-any-model"`
    from `dsh.profile.bundles`. That list is what mounts bundles — `cordis.yml`
    can be empty while the plugin still loads.
 2. Rename `~/.dsh/.agent-presets/claude/` aside. Its `agent.cordis.yml` names
-   `@norman-else/dsh-claude/preset-route`, which stops resolving once the
+   `dsh-claude-any-model/preset-route`, which stops resolving once the
    profile no longer carries the package, and could become a fresh startup
    failure of its own.
 
@@ -87,8 +88,11 @@ route. Silence plus working features means nothing drifted.
 Read the real implementation, not `node_modules`:
 
 ```
-E:\DSH Desktop\resources\app.asar.unpacked\node_modules\@deepseek-ai\
+<install-dir>/resources/app.asar.unpacked/node_modules/@deepseek-ai/
 ```
+
+(Windows ships it under `...\resources\app.asar.unpacked\...`; macOS under
+`DSH.app/Contents/Resources/...`.)
 
 Useful queries, all of which were needed for the 2.0 migration:
 
@@ -117,7 +121,10 @@ DevTools shortcuts are disabled in the shipped build. Quit Desktop completely,
 then:
 
 ```bash
-"E:\DSH Desktop\DSH Desktop.exe" --remote-debugging-port=9222
+# Windows
+"<install-dir>\DSH Desktop.exe" --remote-debugging-port=9222
+# macOS
+open -a "DSH" --args --remote-debugging-port=9222
 ```
 
 Attach over CDP at `http://127.0.0.1:9222/json/list`. `Runtime.consoleAPICalled`

@@ -20,7 +20,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, readFileSync, writeFileSync } from 'node:fs'
 import {
   MessageId,
   ToolCallId,
@@ -33,7 +33,6 @@ import {
   type Message,
   type StreamChunk,
   type TokenUsage,
-  type ToolResultBlock,
   type ToolSchema,
 } from '@deepseek-ai/dsh-llm'
 
@@ -136,11 +135,18 @@ function readOrCreateToken(): string {
   const tokenPath = join(homedir(), '.dsh', 'anthropic-bridge-token')
   try {
     const existing = readFileSync(tokenPath, 'utf8').trim()
-    if (existing.length >= 20) return existing
+    if (existing.length >= 20) {
+      // Tokens written by earlier versions may be world-readable; tighten them
+      // in passing. Best effort only — a read-only home still works.
+      try { chmodSync(tokenPath, 0o600) } catch {}
+      return existing
+    }
   } catch {}
   const token = randomBytes(24).toString('base64url')
   try {
-    writeFileSync(tokenPath, token)
+    // Owner-only: on a multi-user host the default 0644 would let every local
+    // account read the loopback bridge's credentials.
+    writeFileSync(tokenPath, token, { mode: 0o600 })
   } catch {}
   return token
 }

@@ -267,23 +267,24 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   // The bridge is independent of the CLI executable: it serves every model
   // registered in DSH and must be up before any session can pick one, even
   // while the CLI itself is still missing or being updated.
-  let bridgeError: unknown
+  let bridgeStatus: { url: string } | { error: string } = { error: 'not started' }
   try {
     const bridge = await startAnthropicBridge({
       llm: ctx.llm,
       log: message => ctx.logger?.info?.(message),
       debug: process.env.DSH_CLAUDE_BRIDGE_DEBUG === '1',
     })
+    bridgeStatus = { url: bridge.url }
     ctx.logger.info(`dsh-claude: bridge serving DSH models at ${bridge.url}`)
     ctx.effect(() => {
       return () => {
         setActiveBridge(undefined)
         return bridge.close()
       }
-    })
+    }, 'dsh-claude: anthropic bridge')
   } catch (error) {
-    bridgeError = error
-    ctx.logger.warn(`dsh-claude: the model bridge failed to start (${error instanceof Error ? error.message : String(error)}); sessions on Claude's own models are unaffected`)
+    bridgeStatus = { error: error instanceof Error ? error.message : String(error) }
+    ctx.logger.warn(`dsh-claude: the model bridge failed to start (${bridgeStatus.error}); sessions on Claude's own models are unaffected`)
   }
   try {
     const resolution = await resolveClaudeExecutable(
@@ -438,7 +439,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   ctx.effect(() => () => repositoryStatus.dispose(), 'dsh-claude: repository status cache')
   ctx.inject(['webServer'], webCtx => {
     registerClaudeClientDiagnosticsRoute(webCtx)
-    registerClaudeDoctorRoutes(webCtx, webCtx.subprocess, supervisor, supervisorConfig, resolutionError)
+    registerClaudeDoctorRoutes(webCtx, webCtx.subprocess, supervisor, supervisorConfig, resolutionError, bridgeStatus)
     const desktopActions = webCtx.get('desktopActions') as { requestRestart?: () => void } | undefined
     registerClaudeUpdateRoutes(webCtx, webCtx.subprocess, {
       ...(typeof desktopActions?.requestRestart === 'function'

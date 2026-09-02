@@ -29,7 +29,7 @@ All release-blocking findings were resolved: client bundle format, durable crede
 - Official DSH plugin command linked `dsh-claude` into the existing `web` profile successfully.
 - `dsh --profile web --dump-config` composed an `llm-claude` row with `name: dsh-claude`.
 - `node lib/bin.mjs install-preset` installed `$DSH_HOME/.agent-presets/claude/{agent.cordis.yml,preset.yml}`; both files match the package-managed sources.
-- The current Host process at `http://127.0.0.1:56454` started before the profile link, so its Doctor route remains 404 until that Host is restarted. No replacement Web server was started.
+- The then-running Host process at `http://127.0.0.1:<port>` started before the profile link, so its Doctor route remains 404 until that Host is restarted. No replacement Web server was started.
 
 ## Remaining live checks
 
