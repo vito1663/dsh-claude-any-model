@@ -35,7 +35,8 @@
     "README.md",
     "INSTALL.md",
     "LICENSE",
-    "AGENTS.md"
+    "AGENTS.md",
+    "README.zh-CN.md"
   ],
   "license": "MIT",
   "repository": {
