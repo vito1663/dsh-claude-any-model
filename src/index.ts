@@ -14,6 +14,7 @@ import { ClaudeSidecarRepository } from './sidecar.ts'
 import { resolveClaudeExecutable } from './executable.ts'
 import { ClaudeSupervisor } from './supervisor.ts'
 import { createClaudeCodeAdapter } from './adapter.ts'
+import { startAnthropicBridge, setActiveBridge } from './anthropic-bridge.ts'
 import { ensureManagedPreset, ManagedPresetConflictError } from './preset-installer.ts'
 import { claudeBridgeDiagnostics, registerClaudeDoctorRoutes, type ClaudeBridgeDiagnostic } from './doctor-routes.ts'
 import { registerClaudeProjectionRoute } from './projection-routes.ts'
@@ -263,6 +264,27 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     sidecar,
   })
   let resolutionError: unknown
+  // The bridge is independent of the CLI executable: it serves every model
+  // registered in DSH and must be up before any session can pick one, even
+  // while the CLI itself is still missing or being updated.
+  let bridgeError: unknown
+  try {
+    const bridge = await startAnthropicBridge({
+      llm: ctx.llm,
+      log: message => ctx.logger?.info?.(message),
+      debug: process.env.DSH_CLAUDE_BRIDGE_DEBUG === '1',
+    })
+    ctx.logger.info(`dsh-claude: bridge serving DSH models at ${bridge.url}`)
+    ctx.effect(() => {
+      return () => {
+        setActiveBridge(undefined)
+        return bridge.close()
+      }
+    })
+  } catch (error) {
+    bridgeError = error
+    ctx.logger.warn(`dsh-claude: the model bridge failed to start (${error instanceof Error ? error.message : String(error)}); sessions on Claude's own models are unaffected`)
+  }
   try {
     const resolution = await resolveClaudeExecutable(
       ctx.subprocess,
@@ -273,7 +295,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     supervisorConfig.executablePath = resolution.path
     ctx.llm.registerAdapter(
       [...CLAUDE_CODE_PROVIDER_IDS],
-      createClaudeCodeAdapter(supervisor, ctx.agents, ctx.attachments, agent => ctx.agentPresets.composedPreset(agent.ctx), sessionId => reviewComments.drain(sessionId), () => readRenderMode(), request => summarizeSessionTitle(supervisorConfig.executablePath, request)),
+      createClaudeCodeAdapter(supervisor, ctx.agents, ctx.attachments, agent => ctx.agentPresets.composedPreset(agent.ctx), sessionId => reviewComments.drain(sessionId), () => readRenderMode(), request => summarizeSessionTitle(supervisorConfig.executablePath, request), ctx.llm),
     )
     ctx.effect(() => {
       const mounted = new Map<Agent, () => Promise<void>>()

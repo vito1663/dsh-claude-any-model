@@ -17,8 +17,15 @@ import { CLAUDE_CODE_PRESET_ID, CLAUDE_CODE_PROVIDER, DEFAULT_CLAUDE_RENDER_MODE
 import type { ClaudeSupervisor, ClaudeThinkingMode } from './supervisor.ts'
 import type { ClaudeUsage } from './events.ts'
 import { claudeModelRow, latestClaudeModels } from './model-catalog.ts'
+import { enumerateDshModels, type DshModelCatalog } from './anthropic-bridge.ts'
 import { formatReviewComments, type ReviewComment } from './review-comments.ts'
 import { summarizeSessionTitle, type SessionTitleRequest } from './session-title.ts'
+
+/** The provider also serves every model registered elsewhere in DSH, not only
+ *  Claude's own lineup: this adapter fronts the Claude Code CLI, and the CLI
+ *  itself can run on any model the local bridge forwards. A preset that owns
+ *  no Claude Code process at all still must not reach here. */
+const ALLOW_ANY_PRESET = true
 
 const THINKING_MODES = [
   { id: 'off', name: 'Off', description: 'No extended thinking.' },
@@ -220,6 +227,8 @@ export class ClaudeCodeAdapter extends LlmAdapter {
    *  Settings dialog, and the read is dwarfed by the process the turn spawns. */
   readonly #renderMode: () => Promise<ClaudeRenderMode>
   readonly #summarizeTitle: (request: SessionTitleRequest) => Promise<string>
+  /** DSH runtime slice for enumerating the models the bridge can serve. */
+  readonly #llm: DshModelCatalog | undefined
 
   constructor(
     supervisor: ClaudeSupervisor,
@@ -229,6 +238,7 @@ export class ClaudeCodeAdapter extends LlmAdapter {
     drainReviewComments: (sessionId: string) => readonly ReviewComment[] = () => [],
     renderMode: () => Promise<ClaudeRenderMode> = async () => DEFAULT_CLAUDE_RENDER_MODE,
     summarizeTitle: (request: SessionTitleRequest) => Promise<string> = request => summarizeSessionTitle('', request),
+    llm?: DshModelCatalog,
   ) {
     super()
     this.#supervisor = supervisor
@@ -238,6 +248,7 @@ export class ClaudeCodeAdapter extends LlmAdapter {
     this.#drainReviewComments = drainReviewComments
     this.#renderMode = renderMode
     this.#summarizeTitle = summarizeTitle
+    this.#llm = llm
   }
 
   override providerInfo(provider: string): LlmProviderInfo {
@@ -249,6 +260,24 @@ export class ClaudeCodeAdapter extends LlmAdapter {
   }
 
   override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    // The claude route lists every text-capable model registered in DSH, each
+    // as a `provider::model` composite the bridge can route. Claude's own
+    // lineup is the fallback while the DSH catalog is cold or empty, so the
+    // selector is never blank.
+    if (this.#llm !== undefined) {
+      try {
+        const rows = await enumerateDshModels(this.#llm)
+        if (rows.length > 0) {
+          return rows.map(row => ({
+            provider,
+            id: row.composite,
+            name: row.name,
+            description: row.description,
+            inputModalities: ['text', 'image'] as const,
+          }))
+        }
+      } catch {}
+    }
     return latestClaudeModels().map(model => ({
       provider,
       id: model.id,
@@ -259,6 +288,24 @@ export class ClaudeCodeAdapter extends LlmAdapter {
   }
 
   override async resolveModel(provider: string, model: string, _signal?: AbortSignal): Promise<LlmResolvedModelInfo> {
+    if (model.includes('::')) {
+      // A DSH composite routes through the bridge; the CLI reports its own
+      // context window per session, so no capacity table applies here.
+      const at = model.indexOf('::')
+      return {
+        provider,
+        id: model,
+        name: model.slice(at + 2) || model,
+        inputModalities: ['text', 'image'],
+        reasoning: {
+          efforts: THINKING_MODES.map(mode => ({
+            id: ReasoningEffortId(mode.id),
+            name: mode.name,
+            description: mode.description,
+          })),
+        },
+      }
+    }
     const known = claudeModelRow(model)
     const contextWindow = this.#supervisor.contextWindow(model) ?? known?.contextWindow
     return {
@@ -319,7 +366,7 @@ export class ClaudeCodeAdapter extends LlmAdapter {
       throw new Error(`dsh-claude: auxiliary ${options.purpose} calls are not routed into the Claude session`)
     }
     const agent = resolveAgent(this.#agents, options)
-    if (this.#presetIdFor(agent) !== CLAUDE_CODE_PRESET_ID) {
+    if (!ALLOW_ANY_PRESET && this.#presetIdFor(agent) !== CLAUDE_CODE_PRESET_ID) {
       throw new Error(`dsh-claude: provider ${CLAUDE_CODE_PROVIDER} is available only to the ${CLAUDE_CODE_PRESET_ID} preset`)
     }
     const thinkingMode = thinkingModeFor(options.reasoningEffort)
@@ -348,7 +395,9 @@ export class ClaudeCodeAdapter extends LlmAdapter {
     // mid-turn leave the prose buffered for a renderer that was no longer
     // drawing it, so the turn finished with nothing on screen.
     const renderMode = await this.#renderMode()
-    const native = renderMode === 'native'
+    // A preset without the managed Claude sidecar has no renderer drawing from
+    // it, so its turns must stream as ordinary native DSH content blocks.
+    const native = renderMode === 'native' || this.#presetIdFor(agent) !== CLAUDE_CODE_PRESET_ID
     const events = await this.#supervisor.runTurn({
       agent,
       prompt: injectReviewComments(prompt, this.#drainReviewComments(agent.id as string)),
@@ -428,6 +477,7 @@ export function createClaudeCodeAdapter(
   drainReviewComments: (sessionId: string) => readonly ReviewComment[] = () => [],
   renderMode: () => Promise<ClaudeRenderMode> = async () => DEFAULT_CLAUDE_RENDER_MODE,
   summarizeTitle: (request: SessionTitleRequest) => Promise<string> = request => summarizeSessionTitle('', request),
+  llm?: DshModelCatalog,
 ): ClaudeCodeAdapter {
-  return new ClaudeCodeAdapter(supervisor, agents, attachments, presetIdFor, drainReviewComments, renderMode, summarizeTitle)
+  return new ClaudeCodeAdapter(supervisor, agents, attachments, presetIdFor, drainReviewComments, renderMode, summarizeTitle, llm)
 }

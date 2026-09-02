@@ -1,14 +1,13 @@
-# Agent Installation Runbook
+# Installation Runbook
 
-This runbook is idempotent for a local `dsh-claude` checkout and an existing DSH `web` profile.
+Idempotent steps for a local checkout of this plugin and an existing DSH `web` profile. The plugin never asks for or stores Claude credentials; authenticate through the local Claude Code CLI before using it.
 
 ## 1. Verify the checkout
 
 ```sh
-cd /path/to/dsh-claude
-export PATH="/opt/homebrew/bin:$PATH"
+cd /path/to/dsh-claude-any-model
 pnpm install
-pnpm check
+pnpm check          # typecheck + tests + build
 node lib/bin.mjs doctor
 ```
 
@@ -16,26 +15,22 @@ Stop if Doctor cannot find an authenticated local Claude Code installation. Do n
 
 ## 2. Link the bundle into the current Web profile
 
-The bundle keeps a protected compatibility preset at `$DSH_HOME/.agent-presets/claude`, because DSH Desktop 2.0.4 does not retain third-party preset roots from bundle patches. Its route uses the active profile package source to avoid duplicate client-module Loaders. User-modified preset files are preserved.
-
 ```sh
 dsh plugin --profile web add "link:$(pwd)"
 ```
 
-Do not start another DSH Web server. This bundle must load in the existing app at `http://127.0.0.1:56454`.
+Wait for the profile rebuild to finish, then restart DSH if requested. Do not start another DSH Web server — the bundle must load in the existing app.
 
-## 3. Refresh and smoke test
+## 3. Smoke test
 
-1. Refresh the existing DSH Web page.
-2. Confirm **Claude** appears in the new-session Agent Preset picker.
-3. Run one existing native preset prompt and verify it remains native.
-4. Create a Claude session and send a read-only prompt.
-5. Send one edit prompt; verify DSH displays a permission request. Exercise reject first, then allow once with a harmless temporary file.
-6. Cancel a running prompt and confirm the cancelled session owns no child `claude` process that is still executing cancelled work or left orphaned/unowned.
-7. Refresh the browser and continue the session.
-8. Restart DSH and confirm the next prompt resumes the persisted Claude session.
+1. Refresh the DSH Web page.
+2. Create a new conversation, open the model picker, and check the **Claude** group: it should list your DSH-registered models as `provider::model` rows.
+3. Pick one and send a read-only prompt; verify the reply streams and the session's activity appears.
+4. Send one edit prompt; verify DSH displays a permission request. Exercise reject first, then allow once with a harmless temporary file.
+5. Cancel a running prompt and confirm no orphaned `claude` process keeps executing cancelled work.
+6. Restart DSH and confirm the next prompt resumes the persisted Claude session.
 
-A live prompt can consume the user's Claude subscription. Keep it minimal.
+A live prompt consumes the configured model's quota. Keep the smoke test minimal.
 
 ## 4. Uninstall
 
@@ -43,13 +38,22 @@ Clean up the managed preset while the profile can still execute the package CLI,
 
 ```sh
 dsh plugin --profile web exec dsh-claude remove-preset
-dsh plugin --profile web remove @norman-else/dsh-claude
+dsh plugin --profile web remove dsh-claude-any-model
 ```
 
-DSH has no plugin uninstall lifecycle hook, so direct package removal can leave the compatibility preset behind. After direct removal, no source checkout is required; run the matching package version:
+DSH has no plugin uninstall lifecycle hook, so direct package removal can leave the compatibility preset behind. After direct removal, run the matching package version from a cache instead of a checkout:
 
 ```sh
-pnpm dlx @norman-else/dsh-claude@<version> remove-preset
+pnpm dlx dsh-claude-any-model@<version> remove-preset
 ```
 
 Cleanup refuses to delete user-modified preset content.
+
+## 5. Bridge artifacts
+
+The Anthropic bridge keeps two files under `~/.dsh/`:
+
+- `anthropic-bridge-token` — the loopback auth token (persists across restarts; delete to rotate).
+- `dsh-claude-bridge.log` — only written when `DSH_CLAUDE_BRIDGE_DEBUG=1`.
+
+Both are safe to delete while DSH is stopped.

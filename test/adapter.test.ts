@@ -313,11 +313,17 @@ describe('DSH stream mapping', () => {
     ])
   })
 
-  it('rejects a native or recomposed session even if the global provider is selected', async () => {
-    const adapter = new ClaudeCodeAdapter(supervisorEvents([]), { currentInitiator: () => agent, get: () => agent }, attachmentStore(), () => 'standard')
-    await expect(async () => {
-      for await (const _chunk of adapter.stream(options())) { /* no chunks expected */ }
-    }).rejects.toThrow(/available only to the claude preset/)
+  it('serves a non-Claude preset that picked this provider, streaming natively', async () => {
+    // The bridge lets any preset run the CLI on any DSH model. Such a preset
+    // owns no sidecar renderer, so the turn must surface as native blocks
+    // rather than the buffered prose the plugin renderer draws.
+    const adapter = new ClaudeCodeAdapter(supervisorEvents([
+      { type: 'text-delta', text: 'hello' },
+      { type: 'complete', text: 'hello' },
+    ]), { currentInitiator: () => agent, get: () => agent }, attachmentStore(), () => 'standard')
+    const chunks = []
+    for await (const chunk of adapter.stream(options())) chunks.push(chunk)
+    expect(chunks.some(chunk => chunk.type === 'text-delta' && chunk.text === 'hello')).toBe(true)
   })
 
   it('maps cancellation during image resolution without starting Claude', async () => {

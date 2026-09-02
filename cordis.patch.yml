@@ -4,9 +4,9 @@
   config:
     default: standard
     roots:
-      - path: !!js "process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(ctx.baseUrl).resolve('@norman-else/dsh-claude/package.json')), 'preset')"
+      - path: !!js "process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(ctx.baseUrl).resolve('dsh-claude-any-model/package.json')), 'preset')"
         trust: system
 
 - insert:
     - id: llm-claude
-      name: '@norman-else/dsh-claude'
+      name: 'dsh-claude-any-model'

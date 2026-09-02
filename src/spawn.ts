@@ -7,6 +7,7 @@ import {
   type SubprocessHandle,
   type SubprocessRuntime,
 } from '@deepseek-ai/dsh-subprocess'
+import { getActiveBridge, type AnthropicBridge } from './anthropic-bridge.ts'
 
 export const CLAUDE_PROCESS_GRACE_MS = 2_000
 export const CLAUDE_STDERR_TAIL_BYTES = 32 * 1024
@@ -79,6 +80,35 @@ export class ManagedClaudeProcess extends EventEmitter implements SpawnedProcess
 
 export type SpawnObserver = (process: ManagedClaudeProcess, options: SpawnOptions) => void
 
+/** Parse the model the CLI is being spawned with from its argv. The SDK hands
+ *  the query's `model` option through as `--model <value>` or `--model=<value>`. */
+function spawnModelArg(args: readonly string[] | undefined): string | undefined {
+  if (args === undefined) return undefined
+  const at = args.indexOf('--model')
+  if (at >= 0 && typeof args[at + 1] === 'string') return args[at + 1]
+  const inline = args.find(arg => typeof arg === 'string' && arg.startsWith('--model='))
+  return inline === undefined ? undefined : inline.slice('--model='.length)
+}
+
+/** Environment overrides for a CLI about to serve a DSH model through the
+ *  bridge. The `ANTHROPIC_DEFAULT_*` aliases matter because Claude Code routes
+ *  background utility calls (session titles, topic detection) to those tiers
+ *  regardless of the session model. */
+function bridgeSpawnEnvironment(bridge: AnthropicBridge, model: string): Record<string, string> {
+  const small = bridge.fallbackModel() ?? model
+  return {
+    ANTHROPIC_BASE_URL: bridge.url,
+    ANTHROPIC_API_KEY: bridge.token,
+    ANTHROPIC_AUTH_TOKEN: bridge.token,
+    ANTHROPIC_MODEL: model,
+    ANTHROPIC_SMALL_FAST_MODEL: small,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: small,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: model,
+    ANTHROPIC_DEFAULT_OPUS_MODEL: model,
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+  }
+}
+
 export function createManagedClaudeSpawner(
   runtime: Pick<SubprocessRuntime, 'spawn'>,
   executablePath: string,
@@ -88,8 +118,26 @@ export function createManagedClaudeSpawner(
     if (options.command !== executablePath) {
       throw new Error(`dsh-claude: SDK requested unexpected executable ${JSON.stringify(options.command)}`)
     }
+    // A session on a DSH model (`provider::model`) serves its Anthropic traffic
+    // from the local bridge. The CLI's settings cascade lets a user
+    // `~/.claude/settings.json` out-rank the spawn environment, so the
+    // overrides travel as an inline `--settings` document (the highest
+    // precedence the CLI reads) with a process-environment copy as a second
+    // chance. Sessions on Claude's own models keep the user's endpoint
+    // configuration untouched.
+    let extraArgs: string[] = []
+    let bridgeEnv: Record<string, string> | undefined
+    const bridge = getActiveBridge()
+    const model = spawnModelArg(options.args)
+    if (bridge !== undefined && model !== undefined && model.includes('::')) {
+      bridgeEnv = bridgeSpawnEnvironment(bridge, model)
+      extraArgs = ['--settings', JSON.stringify({ env: bridgeEnv })]
+    }
+    const env = bridgeEnv === undefined
+      ? scrubClaudeSpawnEnv(options.env)
+      : { ...scrubClaudeSpawnEnv(options.env), ...bridgeEnv }
     const handle = runtime.spawn({
-      argv: [executablePath, ...options.args],
+      argv: [executablePath, ...options.args, ...extraArgs],
       cwd: options.cwd ?? process.cwd(),
       stdio: {
         stdin: 'pipe',
@@ -98,7 +146,7 @@ export function createManagedClaudeSpawner(
       },
       graceMs: CLAUDE_PROCESS_GRACE_MS,
       signal: options.signal,
-      env: scrubClaudeSpawnEnv(options.env),
+      env,
     })
     const managed = new ManagedClaudeProcess(handle)
     observe?.(managed, options)

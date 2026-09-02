@@ -11,7 +11,7 @@ export const MANAGED_PRESET_FILES = ['agent.cordis.yml', 'preset.yml'] as const
  * it through the active profile package factory, so the preset route and client
  * module share one Loader source. An absolute built entry would register a
  * second source and make the Desktop renderer reject the plugin graph. */
-const PRESET_ROUTE_PACKAGE_SPECIFIER = '@norman-else/dsh-claude/preset-route'
+const PRESET_ROUTE_PACKAGE_SPECIFIER = 'dsh-claude-any-model/preset-route'
 
 export class ManagedPresetConflictError extends Error {
   readonly path: string

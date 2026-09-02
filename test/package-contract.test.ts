@@ -9,7 +9,7 @@ describe('published package contract', () => {
   it('ships each system preset under its preset ID directory', async () => {
     const presetRoot = join(root, 'preset')
     expect(await readdir(presetRoot)).toEqual(['claude'])
-    await expect(readFile(join(presetRoot, 'claude', 'agent.cordis.yml'), 'utf8')).resolves.toContain("name: '@norman-else/dsh-claude/preset-route'")
+    await expect(readFile(join(presetRoot, 'claude', 'agent.cordis.yml'), 'utf8')).resolves.toContain("name: 'dsh-claude-any-model/preset-route'")
     await expect(readFile(join(presetRoot, 'claude', 'preset.yml'), 'utf8')).resolves.toContain('name: Claude')
   })
 

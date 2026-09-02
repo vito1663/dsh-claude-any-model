@@ -136,12 +136,19 @@ export function boundText(value: string, maxChars: number): string {
 }
 
 export function redactText(value: string, maxChars = MAX_DETAIL_CHARS): string {
+  // URL_USERINFO scans from every offset of a `://`-less string, and its
+  // scheme character class can consume the whole input before failing, which
+  // is quadratic on the long transcripts this function exists to bound. The
+  // pre-check is semantics-preserving: the pattern cannot match without a
+  // scheme separator.
+  const withUserinfo = value.includes('://')
+    ? value.replace(URL_USERINFO, `$1${REDACTED}@`)
+    : value
   return boundText(
-    value
+    withUserinfo
       .replace(JWT_TOKEN, REDACTED)
       .replace(PREFIXED_TOKEN, REDACTED)
       .replace(BEARER_TOKEN, `$1${REDACTED}`)
-      .replace(URL_USERINFO, `$1${REDACTED}@`)
       .replace(URL_SECRET_PARAM, `$1${REDACTED}`)
       .replace(SECRET_ASSIGNMENT, `$1${REDACTED}`),
     maxChars,

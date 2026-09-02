@@ -8,6 +8,14 @@ const srcDir = join(root, 'src')
 /** The one module allowed to register a route. */
 const HTTP = 'http.ts'
 /**
+ * The Anthropic bridge is not a DSH route at all: it is a private loopback
+ * HTTP server (token-authenticated, `127.0.0.1` only) that exists because the
+ * CLI cannot present the Host's web-session cookie. It owns its socket and
+ * attaches its `close` handling before its first await, so the ordering this
+ * contract guards does not apply to it.
+ */
+const BRIDGE = 'anthropic-bridge.ts'
+/**
  * Routes that legitimately outlive a budget, allowlisted by name so a fourth
  * one is a deliberate edit to this line rather than an accident. Each holds a
  * connection for as long as it runs, which is the resource this whole contract
@@ -56,7 +64,7 @@ describe('route contract', () => {
 
   it('keeps disconnect teardown in the wrapper, where it happens before the first await', async () => {
     const files = await serverSources()
-    expect(offenders(files, /\b(?:req|res)\s*\.\s*on\s*\(\s*['"]close['"]/u, [HTTP])).toEqual([])
+    expect(offenders(files, /\b(?:req|res)\s*\.\s*on\s*\(\s*['"]close['"]/u, [HTTP, BRIDGE])).toEqual([])
   })
 
   it('holds the streaming allowlist to three routes', async () => {

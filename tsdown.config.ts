@@ -19,7 +19,7 @@ export function wrapDshClientModule(code: string): string {
   const exportNames = exports ? exports[1].split(',').map(n => n.trim().split(' as ').pop()!.trim()).filter(Boolean) : []
   const body = replaced.replace(/export\s*\{[^}]+\};?\n?/m, '')
   const assigns = exportNames.map(n => `\t\tmodule.exports.${n} = ${n};`).join('\n')
-  return `window.__ModuleLoader__.load({\n\tid: "@norman-else/dsh-claude",\n\tfactory: (require) => {\n\t\tvar module = { exports: {} };\n\t\tvar exports = module.exports;\n${requires}\n${body.replace(/^/gm, '\t\t')}${assigns}\n\t\treturn module.exports;\n\t}\n});`
+  return `window.__ModuleLoader__.load({\n\tid: "dsh-claude-any-model",\n\tfactory: (require) => {\n\t\tvar module = { exports: {} };\n\t\tvar exports = module.exports;\n${requires}\n${body.replace(/^/gm, '\t\t')}${assigns}\n\t\treturn module.exports;\n\t}\n});`
 }
 
 export default defineConfig([
