@@ -34,7 +34,8 @@
     "cordis.patch.yml",
     "README.md",
     "INSTALL.md",
-    "LICENSE"
+    "LICENSE",
+    "AGENTS.md"
   ],
   "license": "MIT",
   "repository": {
