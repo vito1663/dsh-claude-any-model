@@ -40,11 +40,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/YOUR_GITHUB_USERNAME/dsh-claude-any-model.git"
+    "url": "git+https://github.com/vito1663/dsh-claude-any-model.git"
   },
-  "homepage": "https://github.com/YOUR_GITHUB_USERNAME/dsh-claude-any-model#readme",
+  "homepage": "https://github.com/vito1663/dsh-claude-any-model#readme",
   "bugs": {
-    "url": "https://github.com/YOUR_GITHUB_USERNAME/dsh-claude-any-model/issues"
+    "url": "https://github.com/vito1663/dsh-claude-any-model/issues"
   },
   "engines": {
     "node": ">=20"

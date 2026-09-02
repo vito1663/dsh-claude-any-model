@@ -46,14 +46,10 @@ The CLI keeps its whole agent loop — tools, `CLAUDE.md`, Skills, MCP servers, 
 Requirements: a running DSH Host (Web or Desktop), and a locally installed, already-authenticated Claude Code CLI. The plugin never asks for or stores Claude credentials.
 
 ```sh
-# from a checkout of this repository
+git clone https://github.com/vito1663/dsh-claude-any-model.git
+cd dsh-claude-any-model
+pnpm install && pnpm run build
 dsh plugin --profile web add "link:$(pwd)"
-```
-
-Or, once published under your own account/name:
-
-```sh
-dsh plugin --profile web add <your-package-name>
 ```
 
 Then create a conversation, open the model picker, and pick a model from the **Claude** group — every row is a DSH model, shown as `provider::model`. What you see matches what your DSH actually has.
@@ -115,14 +111,10 @@ Claude Code CLI ──ANTHROPIC_BASE_URL──> 本地协议桥（仅 127.0.0.1�
 前提：一个运行中的 DSH Host（Web 或桌面版），以及本地已安装并登录的 Claude Code CLI。插件不会索取或存储任何 Claude 凭证。
 
 ```sh
-# 在本仓库的检出目录里
+git clone https://github.com/vito1663/dsh-claude-any-model.git
+cd dsh-claude-any-model
+pnpm install && pnpm run build
 dsh plugin --profile web add "link:$(pwd)"
-```
-
-或者，发布到你自己的账号后：
-
-```sh
-dsh plugin --profile web add <你的包名>
 ```
 
 新建会话 → 打开模型选择器 → **Claude** 分组里选一个 `provider::model` 即可。
