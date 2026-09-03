@@ -119,6 +119,32 @@ describe('buildGenerateOptions', () => {
     expect(generate.messages[1]!.content[0]).toMatchObject({ type: 'text' })
     expect(JSON.stringify(generate.messages[1]!.content[0])).toContain('image input is not supported')
   })
+
+  it('rewrites invalid tool names in history and the tool roster to a valid placeholder', () => {
+    // An upstream glitch once persisted an empty-name tool_use into a live
+    // session; every later replay then died on the endpoint's
+    // `function name is invalid` — the sanitizer keeps such sessions usable.
+    const generate = buildGenerateOptions({
+      model: 'ark::ark-code-latest',
+      tools: [
+        { name: 'Write', description: 'w', input_schema: { type: 'object' } },
+        { name: '', description: 'broken', input_schema: { type: 'object' } },
+        { name: 'bad name with spaces', description: 'b', input_schema: { type: 'object' } },
+      ],
+      messages: [
+        { role: 'assistant', content: [
+          { type: 'text', text: 'working' },
+          { type: 'tool_use', id: 'toolu_ok', name: 'Read', input: { file_path: '/tmp/x' } },
+          { type: 'tool_use', id: 'toolu_broken', name: '', input: { content: 'poisoned' } },
+        ] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_broken', content: 'error', is_error: true }] },
+      ],
+    }, target)
+    expect(generate.tools?.map(tool => tool.name)).toEqual(['Write', 'bridge_tool', 'bridge_tool'])
+    const assistant = generate.messages.find(message => message.role === 'assistant')!
+    const names = assistant.content.map(block => block.type === 'tool-call' ? block.name : undefined).filter(Boolean)
+    expect(names).toEqual(['Read', 'bridge_tool'])
+  })
 })
 
 describe('bridge over the wire', () => {

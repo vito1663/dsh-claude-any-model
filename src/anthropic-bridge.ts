@@ -201,6 +201,18 @@ function toolResultContent(result: AnthropicContentBlock): ContentBlock[] {
 /** Translate an Anthropic Messages body into DSH generate options. Images are
  *  not yet forwardable: DSH image input needs an attachment reference the CLI
  *  protocol does not carry, so image blocks degrade to a text note. */
+/** A tool name an OpenAI-compatible endpoint will accept: must start with a
+ *  letter and continue with letters, digits, underscores, or dashes. Names
+ *  outside this charset (an upstream glitch can persist an empty-name
+ *  tool_use into a session's history) would make every replayed request fail
+ *  with `function name is invalid` forever, so they are rewritten to a valid
+ *  placeholder instead — id pairing survives, the history stays replayable. */
+const TOOL_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_-]*$/u
+
+export function sanitizeToolName(name: unknown): string {
+  return typeof name === 'string' && TOOL_NAME_PATTERN.test(name) ? name : 'bridge_tool'
+}
+
 export function buildGenerateOptions(body: AnthropicRequestBody, target: ModelTarget): GenerateOptions {
   const messages: Message[] = []
   for (const item of body.messages ?? []) {
@@ -241,7 +253,7 @@ export function buildGenerateOptions(body: AnthropicRequestBody, target: ModelTa
           out.push({
             type: 'tool-call',
             id: ToolCallId(block.id),
-            name: block.name,
+            name: sanitizeToolName(block.name),
             arguments: typeof block.input === 'string' ? block.input : JSON.stringify(block.input ?? {}),
           })
         }
@@ -260,7 +272,7 @@ export function buildGenerateOptions(body: AnthropicRequestBody, target: ModelTa
   const tools: ToolSchema[] = (body.tools ?? [])
     .filter((tool): tool is { name: string, description?: unknown, input_schema?: unknown } => typeof tool?.name === 'string')
     .map(tool => ({
-      name: tool.name,
+      name: sanitizeToolName(tool.name),
       description: typeof tool.description === 'string' ? tool.description : '',
       parameters: tool.input_schema !== null && typeof tool.input_schema === 'object'
         ? tool.input_schema as ToolSchema['parameters']
@@ -343,7 +355,7 @@ function aggregatedContent(sink: BlockSink): AnthropicContentBlock[] {
       try {
         input = JSON.parse(entry.args.length > 0 ? entry.args : '{}') as unknown
       } catch {}
-      content.push({ type: 'tool_use', id: entry.id.length > 0 ? entry.id : `toolu_${randomUUID()}`, name: entry.name, input })
+      content.push({ type: 'tool_use', id: entry.id.length > 0 ? entry.id : `toolu_${randomUUID()}`, name: sanitizeToolName(entry.name), input })
     }
   }
   return content
@@ -443,6 +455,7 @@ export async function startAnthropicBridge(options: CreateAnthropicBridgeOptions
       'cache-control': 'no-cache',
       connection: 'keep-alive',
     })
+    appendDebug(`request shape: ${JSON.stringify(body.messages ?? []).length} bytes of messages, ${JSON.stringify(body.system ?? '').length} bytes of system, ${(body.tools ?? []).length} tools, stream=${String(body.stream)}`)
     const usage = { input_tokens: 0, output_tokens: 0 }
     const sink = new BlockSink()
     let stopReason: AnthropicStopReason = 'end_turn'
@@ -469,7 +482,7 @@ export async function startAnthropicBridge(options: CreateAnthropicBridgeOptions
         sseSend(res, 'content_block_start', {
           type: 'content_block_start',
           index: entry.anthropicIndex,
-          content_block: { type: 'tool_use', id: entry.id, name: entry.name, input: {} },
+          content_block: { type: 'tool_use', id: entry.id, name: sanitizeToolName(entry.name), input: {} },
         })
       }
       return entry
@@ -480,6 +493,7 @@ export async function startAnthropicBridge(options: CreateAnthropicBridgeOptions
       return sink.entry(dshIndex)
         ?? announce(dshIndex, 'tool-call', { id: id ?? `toolu_${randomUUID()}`, name: name ?? 'tool' })
     }
+    let upstreamError: string | undefined
     try {
       for await (const chunk of llm.stream({ ...generate, signal })) {
         if (res.writableEnded) return
@@ -518,10 +532,12 @@ export async function startAnthropicBridge(options: CreateAnthropicBridgeOptions
         } else if (chunk.type === 'finish') {
           const kind = chunk.reason?.kind
           if (kind === 'error') {
+            upstreamError = chunk.reason?.failure?.message ?? 'model call failed'
             // An upstream failure is never a normal end of stream, whatever
             // already arrived: closing as `end_turn` would hand the CLI a
             // truncated message dressed up as a complete answer.
-            sseSend(res, 'error', { type: 'error', error: { type: 'api_error', message: chunk.reason?.failure?.message ?? 'model call failed' } })
+            sseSend(res, 'error', { type: 'error', error: { type: 'api_error', message: upstreamError } })
+            appendDebug(`stream outcome: upstream error after ${sink.announced} announced block(s): ${upstreamError}`)
             res.end()
             return
           }
@@ -530,6 +546,7 @@ export async function startAnthropicBridge(options: CreateAnthropicBridgeOptions
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      appendDebug(`stream outcome: upstream threw after ${sink.announced} announced block(s): ${message}`)
       if (sink.announced === 0) {
         replyError(res, 500, 'api_error', message)
         return
@@ -541,10 +558,12 @@ export async function startAnthropicBridge(options: CreateAnthropicBridgeOptions
       // message this would only become an empty assistant turn the CLI
       // reports as an opaque `last_content_type=none` diagnostic; an explicit
       // api_error is retryable by the CLI and names the real cause.
+      appendDebug(`stream outcome: upstream finished clean but EMPTY (0 blocks, ${usage.output_tokens} output tokens)`)
       sseSend(res, 'error', { type: 'error', error: { type: 'api_error', message: EMPTY_UPSTREAM_RESPONSE } })
       res.end()
       return
     }
+    appendDebug(`stream outcome: ok (${sink.announced} block(s), stop=${stopReason}, ${usage.output_tokens} output tokens)`)
     sseSend(res, 'message_delta', { type: 'message_delta', delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: usage.output_tokens } })
     sseSend(res, 'message_stop', { type: 'message_stop' })
     res.end()
@@ -566,13 +585,13 @@ export async function startAnthropicBridge(options: CreateAnthropicBridgeOptions
           if (entry !== undefined) entry.thinking += chunk.text
         } else if (chunk.type === 'tool-call-delta') {
           const entry = sink.entry(chunk.index)
-            ?? sink.announce(chunk.index, 'tool-call', { id: chunk.id ?? `toolu_${randomUUID()}`, name: chunk.name ?? 'tool' })
+            ?? sink.announce(chunk.index, 'tool-call', { id: chunk.id ?? `toolu_${randomUUID()}`, name: sanitizeToolName(chunk.name ?? 'tool') })
           if (typeof chunk.argumentsDelta === 'string') entry.args += chunk.argumentsDelta
         } else if (chunk.type === 'block-end') {
           const entry = sink.entry(chunk.index)
           const block = chunk.block
           if (entry === undefined && block?.type === 'tool-call') {
-            const created = sink.announce(chunk.index, 'tool-call', { id: block.id ?? `toolu_${randomUUID()}`, name: block.name ?? 'tool' })
+            const created = sink.announce(chunk.index, 'tool-call', { id: block.id ?? `toolu_${randomUUID()}`, name: sanitizeToolName(block.name ?? 'tool') })
             created.args = typeof block.arguments === 'string' ? block.arguments : JSON.stringify(block.arguments ?? {})
           }
         } else if (chunk.type === 'usage') {
