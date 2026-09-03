@@ -422,6 +422,11 @@ export async function startAnthropicBridge(options: CreateAnthropicBridgeOptions
     return matches(typeof apiKey === 'string' ? apiKey : undefined) || matches(bearer)
   }
 
+  /** An upstream stream that ends without a single block is never a useful
+   *  answer — surfaced as a retryable api_error instead of an empty message
+   *  the CLI can only report as `last_content_type=none`. */
+  const EMPTY_UPSTREAM_RESPONSE = 'upstream model returned an empty response (no content blocks); the model endpoint may be degraded — retry, or switch models'
+
   function replyError(res: ServerResponse, status: number, type: string, message: string): void {
     if (res.writableEnded) return
     res.writeHead(status, { 'content-type': 'application/json' })
@@ -512,8 +517,12 @@ export async function startAnthropicBridge(options: CreateAnthropicBridgeOptions
           usageOf(chunk.usage, usage)
         } else if (chunk.type === 'finish') {
           const kind = chunk.reason?.kind
-          if (kind === 'error' && sink.announced === 0) {
+          if (kind === 'error') {
+            // An upstream failure is never a normal end of stream, whatever
+            // already arrived: closing as `end_turn` would hand the CLI a
+            // truncated message dressed up as a complete answer.
             sseSend(res, 'error', { type: 'error', error: { type: 'api_error', message: chunk.reason?.failure?.message ?? 'model call failed' } })
+            res.end()
             return
           }
           stopReason = stopReasonFor(kind)
@@ -526,6 +535,15 @@ export async function startAnthropicBridge(options: CreateAnthropicBridgeOptions
         return
       }
       sseSend(res, 'error', { type: 'error', error: { type: 'api_error', message } })
+    }
+    if (sink.announced === 0) {
+      // The upstream completed without yielding a single block. As a 200
+      // message this would only become an empty assistant turn the CLI
+      // reports as an opaque `last_content_type=none` diagnostic; an explicit
+      // api_error is retryable by the CLI and names the real cause.
+      sseSend(res, 'error', { type: 'error', error: { type: 'api_error', message: EMPTY_UPSTREAM_RESPONSE } })
+      res.end()
+      return
     }
     sseSend(res, 'message_delta', { type: 'message_delta', delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: usage.output_tokens } })
     sseSend(res, 'message_stop', { type: 'message_stop' })
@@ -560,11 +578,21 @@ export async function startAnthropicBridge(options: CreateAnthropicBridgeOptions
         } else if (chunk.type === 'usage') {
           usageOf(chunk.usage, usage)
         } else if (chunk.type === 'finish') {
+          if (chunk.reason?.kind === 'error') {
+            // Same contract as the stream path: an upstream failure must not
+            // degrade into a 200 message with `end_turn`.
+            replyError(res, 500, 'api_error', chunk.reason.failure?.message ?? 'model call failed')
+            return
+          }
           stopReason = stopReasonFor(chunk.reason?.kind)
         }
       }
     } catch (error) {
       replyError(res, 500, 'api_error', error instanceof Error ? error.message : String(error))
+      return
+    }
+    if (sink.announced === 0) {
+      replyError(res, 500, 'api_error', EMPTY_UPSTREAM_RESPONSE)
       return
     }
     res.writeHead(200, { 'content-type': 'application/json' })

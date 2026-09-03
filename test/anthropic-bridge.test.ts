@@ -208,6 +208,77 @@ describe('bridge over the wire', () => {
     const probe = await fetch(`${bridge.url}/v1/other`, { method: 'POST', headers: { 'x-api-key': bridge.token }, body: '{}' })
     expect(probe.status).toBe(404)
   })
+
+  it('errors an upstream stream that ends without a single block instead of answering an empty message', async () => {
+    seenRequests.length = 0
+    const bridge = await startAnthropicBridge({ llm: catalog(scriptedaStream([
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])) })
+    bridges.push(bridge)
+    const response = await fetch(`${bridge.url}/v1/messages`, {
+      method: 'POST',
+      headers: { 'x-api-key': bridge.token, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'ark::ark-code-latest', max_tokens: 100, stream: true, messages: [{ role: 'user', content: 'weather?' }] }),
+    })
+    const text = await response.text()
+    const events = text.split('\n\n').filter(Boolean).map(chunk => {
+      const [eventLine, dataLine] = chunk.split('\n')
+      return { event: eventLine!.slice('event: '.length), data: JSON.parse(dataLine!.slice('data: '.length)) as Record<string, unknown> }
+    })
+    expect(events.at(-1)).toMatchObject({ event: 'error', data: { error: { type: 'api_error', message: expect.stringContaining('empty response') } } })
+    // The stream must not close as a normal end_turn message after the error.
+    expect(events.map(event => event.event)).not.toContain('message_stop')
+  })
+
+  it('surfaces an upstream error finish even after blocks were announced', async () => {
+    seenRequests.length = 0
+    const bridge = await startAnthropicBridge({ llm: catalog(scriptedaStream([
+      { type: 'block-start', index: 0, blockType: 'text' },
+      { type: 'text-delta', index: 0, text: 'Partial ' },
+      { type: 'finish', reason: { kind: 'error', failure: { message: 'upstream connection dropped' } } },
+    ])) })
+    bridges.push(bridge)
+    const response = await fetch(`${bridge.url}/v1/messages`, {
+      method: 'POST',
+      headers: { 'x-api-key': bridge.token, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'ark::ark-code-latest', max_tokens: 100, stream: true, messages: [{ role: 'user', content: 'weather?' }] }),
+    })
+    const text = await response.text()
+    expect(text).toContain('event: error')
+    expect(text).toContain('upstream connection dropped')
+    // A truncated delivery must not be dressed up as a complete answer.
+    expect(text).not.toContain('event: message_stop')
+  })
+
+  it('aggregated upstream failures answer 500 with the real cause, and an empty aggregate never 200s', async () => {
+    seenRequests.length = 0
+    const failing = await startAnthropicBridge({ llm: catalog(scriptedaStream([
+      { type: 'block-start', index: 0, blockType: 'text' },
+      { type: 'text-delta', index: 0, text: 'Partial ' },
+      { type: 'finish', reason: { kind: 'error', failure: { message: 'gateway timeout' } } },
+    ])) })
+    bridges.push(failing)
+    const failed = await fetch(`${failing.url}/v1/messages`, {
+      method: 'POST',
+      headers: { 'x-api-key': failing.token, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'ark::ark-code-latest', max_tokens: 100, messages: [{ role: 'user', content: 'hi' }] }),
+    })
+    expect(failed.status).toBe(500)
+    expect(await failed.json()).toMatchObject({ error: { type: 'api_error', message: 'gateway timeout' } })
+
+    seenRequests.length = 0
+    const empty = await startAnthropicBridge({ llm: catalog(scriptedaStream([
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])) })
+    bridges.push(empty)
+    const blank = await fetch(`${empty.url}/v1/messages`, {
+      method: 'POST',
+      headers: { 'x-api-key': empty.token, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'ark::ark-code-latest', max_tokens: 100, messages: [{ role: 'user', content: 'hi' }] }),
+    })
+    expect(blank.status).toBe(500)
+    expect(await blank.json()).toMatchObject({ error: { type: 'api_error', message: expect.stringContaining('empty response') } })
+  })
 })
 
 function fakeHandle(): { handle: SubprocessHandle } {

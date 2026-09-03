@@ -58,12 +58,15 @@ dsh plugin --profile web add "link:$(pwd)"
 
 - Host 进程环境变量 `DSH_CLAUDE_BRIDGE_DEBUG=1`：在 `~/.dsh/dsh-claude-bridge.log` 记录每个请求的详细日志。
 - 桥 token 文件：`~/.dsh/anthropic-bridge-token`，删除后下次启动轮换（运行中的会话需要重启）。
+- **允许的访问域名**（设置 → Claude Code）：默认情况下，插件自己的 HTTP 路由（诊断、设置、仓库面板、实时过程流）只接受 `127.0.0.1` / `localhost` 访问。`dsh web --trusted-host` 里列出的域名自动放行；额外域名可以在插件设置里以逗号分隔填写（也可直接编辑 `~/.dsh/plugins/dsh-claude/settings.json` 的 `trustedOrigins` 字段，下个请求即生效，无需重启）。所有非本机请求还必须携带有效的 dsh web 登录会话——插件会把请求的会话 Cookie 在本机回环上向 dsh 复验后才响应，公网上的匿名访问依然会被拒绝。
 
 ### 常见问题
 
 - **桥返回 401 `authentication_error`**：有旧 token 的 CLI 进程还在跑。重启该会话（或 Host）即可；token 跨重启稳定，只有手动轮换后才会出现。
 - **报错 `The supported API model names are … but you passed <composite>`**：请求没走桥——你的 `~/.claude/settings.json` 仍指向第三方端点，且会话未带桥设置启动。升级本 fork 至 ≥ 0.2.0，或清掉 `~/.claude/settings.json` 里的 `ANTHROPIC_BASE_URL`。
 - **Claude 分组只显示 default/opus/sonnet/haiku**：DSH 目录枚举为空。检查其他 provider 是否注册且健康（已登录页面访问 `GET /plugins/dsh-claude/doctor`）。
+- **设置页或实时转录报 `forbidden`**：你是通过一个既非本机回环、也未放行的域名访问 dsh（例如反向代理域名）。用 `dsh web --trusted-host <域名>` 启动（自动放行），或在 设置 → Claude Code → 允许的访问域名 里添加该域名，并确认浏览器已登录 dsh web（插件响应非本机请求前会先校验 dsh 会话）。
+- **一轮对话失败，报 `result_type=assistant last_content_type=none stop_reason=end_turn`**（≥ 0.2.2 会直接显示真实原因）——模型上游端点返回了空响应：流结束了却没有任何内容块，通常是上游服务过载或故障。先重试本轮；仍失败就切换模型或新开会话。桥（≥ 0.2.2）会把它作为可重试的 `api_error` 上报，CLI 会自动重试而不是静默失败。
 
 ---
 
